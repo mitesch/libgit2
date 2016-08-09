@@ -42,6 +42,8 @@ extern int git_tree_entry_icmp(const git_tree_entry *e1, const git_tree_entry *e
 void git_tree__free(void *tree);
 int git_tree__parse(void *tree, git_odb_object *obj);
 
+int git_treebuilder_write_with_buffer(git_oid *oid, git_treebuilder *bld, git_buf *tree);
+
 /**
  * Lookup the first position in the tree with a given prefix.
  *
