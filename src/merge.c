@@ -33,6 +33,7 @@
 #include "oidarray.h"
 #include "merge_driver.h"
 #include "oidmap.h"
+#include "array.h"
 
 #include "git2/types.h"
 #include "git2/repository.h"
@@ -1083,10 +1084,9 @@ static int index_entry_similarity_inexact(
 }
 
 /* Tracks deletes by oid for merge_diff_mark_similarity_exact().  This is a
-* non-shrinking queue where next_pos is the next position to dequeue.
-*/
+* non-shrinking queue where next_pos is the next position to dequeue. */
 typedef struct {
-	git_vector vec;
+	git_array_t(size_t) arr;
 	size_t next_pos;
 } deletes_by_oid_queue;
 
@@ -1097,7 +1097,7 @@ static void deletes_by_oid_free(git_oidmap *map) {
 		return;
 
 	git_oidmap_foreach_value(map, queue, {
-		git_vector_free(&queue->vec);
+		git_array_clear(queue->arr);
 		git__free(queue);
 	});
 	git_oidmap_free(map);
@@ -1106,6 +1106,7 @@ static void deletes_by_oid_free(git_oidmap *map) {
 static int deletes_by_oid_enqueue(git_oidmap *map, const git_oid *id, size_t idx) {
 	khint_t pos;
 	deletes_by_oid_queue *queue;
+	size_t *array_entry;
 	int error;
 
 	pos = git_oidmap_lookup_index(map, id);
@@ -1115,8 +1116,7 @@ static int deletes_by_oid_enqueue(git_oidmap *map, const git_oid *id, size_t idx
 	else {
 		queue = git__malloc(sizeof(deletes_by_oid_queue));
 		GITERR_CHECK_ALLOC(queue);
-
-		git_vector_init(&queue->vec, 1, NULL);
+		git_array_init(queue->arr);
 		queue->next_pos = 0;
 
 		git_oidmap_insert(map, id, queue, &error);
@@ -1126,12 +1126,16 @@ static int deletes_by_oid_enqueue(git_oidmap *map, const git_oid *id, size_t idx
 		}
 	}
 
-	return git_vector_insert(&queue->vec, (void *)idx);
+	array_entry = git_array_alloc(queue->arr);
+	GITERR_CHECK_ALLOC(array_entry);
+	*array_entry = idx;
+	return 0;
 }
 
 static int deletes_by_oid_dequeue(size_t *idx, git_oidmap *map, const git_oid *id) {
 	khint_t pos;
 	deletes_by_oid_queue *queue;
+	size_t *array_entry;
 
 	pos = git_oidmap_lookup_index(map, id);
 
@@ -1140,11 +1144,12 @@ static int deletes_by_oid_dequeue(size_t *idx, git_oidmap *map, const git_oid *i
 	}
 
 	queue = git_oidmap_value_at(map, pos);
-	if (queue->next_pos >= git_vector_length(&queue->vec)) {
+	
+	array_entry = git_array_get(queue->arr, queue->next_pos);
+	if (array_entry == NULL)
 		return GIT_ENOTFOUND;
-	}
 
-	*idx = (size_t)git_vector_get(&queue->vec, queue->next_pos);
+	*idx = *array_entry;
 	queue->next_pos++;
 
 	return 0;
