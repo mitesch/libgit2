@@ -1084,11 +1084,14 @@ static int index_entry_similarity_inexact(
 }
 
 /* Tracks deletes by oid for merge_diff_mark_similarity_exact().  This is a
-* non-shrinking queue where next_pos is the next position to dequeue. */
+* non-shrinking queue where next_pos is the next position to dequeue.
+*/
 typedef struct {
 	git_array_t(size_t) arr;
 	size_t next_pos;
+	size_t first_entry;
 } deletes_by_oid_queue;
+
 
 static void deletes_by_oid_free(git_oidmap *map) {
 	deletes_by_oid_queue *queue;
@@ -1097,7 +1100,8 @@ static void deletes_by_oid_free(git_oidmap *map) {
 		return;
 
 	git_oidmap_foreach_value(map, queue, {
-		git_array_clear(queue->arr);
+		if (queue->arr.asize != 0)
+			git_array_clear(queue->arr);
 		git__free(queue);
 	});
 	git_oidmap_free(map);
@@ -1112,23 +1116,39 @@ static int deletes_by_oid_enqueue(git_oidmap *map, const git_oid *id, size_t idx
 	pos = git_oidmap_lookup_index(map, id);
 	if (git_oidmap_valid_index(map, pos)) {
 		queue = git_oidmap_value_at(map, pos);
+
+		/* if we only have one entry in our array, this means we've hacked it up like above
+		* and need to convert it to a real array.  we can't simply call `git_array_alloc` because
+		* trying to grow this array would try to realloc `queue->first` which would definitely crash
+		*/
+		if (queue->arr.size == 1 && queue->arr.asize == 0) {
+			git_array_init(queue->arr);
+
+			array_entry = git_array_alloc(queue->arr);
+			GITERR_CHECK_ALLOC(array_entry);
+			*array_entry = queue->first_entry;
+		}
+
+		array_entry = git_array_alloc(queue->arr);
+		GITERR_CHECK_ALLOC(array_entry);
+		*array_entry = idx;
 	}
 	else {
-		queue = git__malloc(sizeof(deletes_by_oid_queue));
+		queue = git__calloc(1, sizeof(deletes_by_oid_queue));
 		GITERR_CHECK_ALLOC(queue);
-		git_array_init(queue->arr);
-		queue->next_pos = 0;
 
 		git_oidmap_insert(map, id, queue, &error);
 		if (error < 0) {
 			git__free(queue);
 			return -1;
 		}
+
+		/* initial oid - populate the array with a pointer to our own `size_t` */
+		queue->first_entry = idx;
+		queue->arr.size = 1;
+		queue->arr.ptr = &queue->first_entry;
 	}
 
-	array_entry = git_array_alloc(queue->arr);
-	GITERR_CHECK_ALLOC(array_entry);
-	*array_entry = idx;
 	return 0;
 }
 
@@ -1144,7 +1164,7 @@ static int deletes_by_oid_dequeue(size_t *idx, git_oidmap *map, const git_oid *i
 	}
 
 	queue = git_oidmap_value_at(map, pos);
-	
+
 	array_entry = git_array_get(queue->arr, queue->next_pos);
 	if (array_entry == NULL)
 		return GIT_ENOTFOUND;
